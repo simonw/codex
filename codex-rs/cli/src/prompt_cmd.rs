@@ -233,20 +233,44 @@ fn build_prompt_inputs(system_prompt: &str, prompt_text: &str) -> Vec<ResponseIt
 }
 
 async fn consume_stream(stream: &mut ResponseStream) -> anyhow::Result<()> {
+    use owo_colors::OwoColorize;
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
     let mut printed_response = false;
     let mut reasoning_summary_line = String::new();
+    let mut summary_active = false;
+
+    let flush_summary =
+        |summary_active: &mut bool, reasoning_summary_line: &mut String| -> bool {
+            if *summary_active {
+                if !reasoning_summary_line.is_empty() {
+                    eprintln!();
+                    reasoning_summary_line.clear();
+                } else {
+                    eprintln!();
+                }
+                *summary_active = false;
+                true
+            } else {
+                false
+            }
+        };
 
     while let Some(event) = stream.next().await {
         match event? {
             ResponseEvent::Created => {}
             ResponseEvent::OutputTextDelta(delta) => {
+                if flush_summary(&mut summary_active, &mut reasoning_summary_line) {
+                    stderr.flush()?;
+                }
                 stdout.write_all(delta.as_bytes())?;
                 stdout.flush()?;
                 printed_response = true;
             }
             ResponseEvent::OutputItemAdded(item) | ResponseEvent::OutputItemDone(item) => {
+                if flush_summary(&mut summary_active, &mut reasoning_summary_line) {
+                    stderr.flush()?;
+                }
                 if let Some(text) = assistant_text(&item)
                     && !printed_response
                 {
@@ -257,25 +281,25 @@ async fn consume_stream(stream: &mut ResponseStream) -> anyhow::Result<()> {
             }
             ResponseEvent::ReasoningSummaryDelta(text) => {
                 reasoning_summary_line.push_str(&text);
-                eprint!("\r(reasoning summary) {reasoning_summary_line}");
+                summary_active = true;
+                let colored = format!("(reasoning summary) {reasoning_summary_line}");
+                eprint!("\r{}", colored.yellow());
                 stderr.flush()?;
             }
             ResponseEvent::ReasoningContentDelta(text) => {
                 eprintln!("(reasoning detail) {text}");
             }
             ResponseEvent::ReasoningSummaryPartAdded => {
-                if !reasoning_summary_line.is_empty() {
-                    eprintln!();
-                    reasoning_summary_line.clear();
+                if flush_summary(&mut summary_active, &mut reasoning_summary_line) {
+                    stderr.flush()?;
                 }
             }
             ResponseEvent::RateLimits(snapshot) => {
                 eprintln!("Rate limits: {snapshot:?}");
             }
             ResponseEvent::Completed { token_usage, .. } => {
-                if !reasoning_summary_line.is_empty() {
-                    eprintln!();
-                    reasoning_summary_line.clear();
+                if flush_summary(&mut summary_active, &mut reasoning_summary_line) {
+                    stderr.flush()?;
                 }
                 if printed_response {
                     stdout.write_all(b"\n")?;
@@ -293,8 +317,8 @@ async fn consume_stream(stream: &mut ResponseStream) -> anyhow::Result<()> {
         stdout.write_all(b"\n")?;
         stdout.flush()?;
     }
-    if !reasoning_summary_line.is_empty() {
-        eprintln!();
+    if flush_summary(&mut summary_active, &mut reasoning_summary_line) {
+        stderr.flush()?;
     }
     Ok(())
 }
