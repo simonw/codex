@@ -26,9 +26,11 @@ use std::path::PathBuf;
 use supports_color::Stream;
 
 mod mcp_cmd;
+mod prompt_cmd;
 mod wsl_paths;
 
 use crate::mcp_cmd::McpCli;
+use crate::prompt_cmd::PromptCli;
 use crate::wsl_paths::normalize_for_wsl;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -80,6 +82,9 @@ enum Subcommand {
 
     /// [experimental] Run the Codex MCP server (stdio transport).
     McpServer,
+
+    /// Run a single prompt directly against the configured model API.
+    Prompt(PromptCli),
 
     /// [experimental] Run the app server.
     AppServer,
@@ -392,6 +397,13 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             // Propagate any root-level config overrides (e.g. `-c key=value`).
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
             mcp_cli.run().await?;
+        }
+        Some(Subcommand::Prompt(mut prompt_cli)) => {
+            prepend_config_flags(
+                &mut prompt_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            prompt_cmd::run_prompt_command(prompt_cli).await?;
         }
         Some(Subcommand::AppServer) => {
             codex_app_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
