@@ -10,7 +10,6 @@ use codex_core::OtelEventManager;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ResponseStream;
-use codex_core::USER_INSTRUCTIONS_PREFIX;
 use codex_core::auth::enforce_login_restrictions;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -49,12 +48,19 @@ pub struct PromptCli {
     pub prompt: Option<String>,
 }
 
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. Respond directly to the user request without running tools or shell commands.";
+
 pub async fn run_prompt_command(cli: PromptCli) -> anyhow::Result<()> {
     let prompt_text = if cli.list_models {
         None
     } else {
         Some(read_prompt(cli.prompt.clone())?)
     };
+
+    let system_prompt = cli
+        .system_prompt
+        .clone()
+        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
 
     let config = Arc::new(load_config(&cli).await?);
     let auth_manager = AuthManager::shared(
@@ -73,7 +79,8 @@ pub async fn run_prompt_command(cli: PromptCli) -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    run_prompt(prompt_text.expect("prompt required"), config, auth_manager).await
+    let prompt_text = prompt_text.ok_or_else(|| anyhow::anyhow!("prompt is required"))?;
+    run_prompt(prompt_text, system_prompt, config, auth_manager).await
 }
 
 async fn load_config(cli: &PromptCli) -> anyhow::Result<Config> {
@@ -87,12 +94,12 @@ async fn load_config(cli: &PromptCli) -> anyhow::Result<Config> {
         config_profile: None,
         codex_linux_sandbox_exe: None,
         base_instructions: None,
-        developer_instructions: cli.system_prompt.clone(),
+        developer_instructions: None,
         compact_prompt: None,
-        include_apply_patch_tool: None,
+        include_apply_patch_tool: Some(false),
         show_raw_agent_reasoning: None,
-        tools_web_search_request: None,
-        experimental_sandbox_command_assessment: None,
+        tools_web_search_request: Some(false),
+        experimental_sandbox_command_assessment: Some(false),
         additional_writable_roots: Vec::new(),
     };
 
@@ -158,6 +165,7 @@ fn print_models(auth_mode: Option<AuthMode>) {
 
 async fn run_prompt(
     prompt_text: String,
+    system_prompt: String,
     config: Arc<Config>,
     auth_manager: Arc<AuthManager>,
 ) -> anyhow::Result<()> {
@@ -180,7 +188,7 @@ async fn run_prompt(
     );
 
     let mut prompt = Prompt::default();
-    prompt.input = build_prompt_inputs(&config, &prompt_text);
+    prompt.input = build_prompt_inputs(&system_prompt, &prompt_text);
     prompt.base_instructions_override = config.base_instructions.clone();
 
     let mut stream = ModelClient::new(
@@ -199,43 +207,30 @@ async fn run_prompt(
     consume_stream(&mut stream).await
 }
 
-fn build_prompt_inputs(config: &Config, prompt_text: &str) -> Vec<ResponseItem> {
-    let mut items = Vec::new();
-    if let Some(text) = &config.developer_instructions {
-        items.push(ResponseItem::Message {
+fn build_prompt_inputs(system_prompt: &str, prompt_text: &str) -> Vec<ResponseItem> {
+    vec![
+        ResponseItem::Message {
             id: None,
             role: "developer".to_string(),
-            content: vec![ContentItem::InputText { text: text.clone() }],
-        });
-    }
-
-    if let Some(instructions) = &config.user_instructions {
-        let formatted = format!(
-            "{}{}\n\n<INSTRUCTIONS>\n{}\n</INSTRUCTIONS>",
-            USER_INSTRUCTIONS_PREFIX,
-            config.cwd.to_string_lossy(),
-            instructions
-        );
-        items.push(ResponseItem::Message {
+            content: vec![ContentItem::InputText {
+                text: system_prompt.to_string(),
+            }],
+        },
+        ResponseItem::Message {
             id: None,
             role: "user".to_string(),
-            content: vec![ContentItem::InputText { text: formatted }],
-        });
-    }
-
-    items.push(ResponseItem::Message {
-        id: None,
-        role: "user".to_string(),
-        content: vec![ContentItem::InputText {
-            text: prompt_text.to_string(),
-        }],
-    });
-    items
+            content: vec![ContentItem::InputText {
+                text: prompt_text.to_string(),
+            }],
+        },
+    ]
 }
 
 async fn consume_stream(stream: &mut ResponseStream) -> anyhow::Result<()> {
     let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
     let mut printed_response = false;
+    let mut reasoning_summary_line = String::new();
 
     while let Some(event) = stream.next().await {
         match event? {
@@ -246,23 +241,36 @@ async fn consume_stream(stream: &mut ResponseStream) -> anyhow::Result<()> {
                 printed_response = true;
             }
             ResponseEvent::OutputItemAdded(item) | ResponseEvent::OutputItemDone(item) => {
-                if let Some(text) = assistant_text(&item) {
+                if let Some(text) = assistant_text(&item)
+                    && !printed_response
+                {
                     stdout.write_all(text.as_bytes())?;
                     stdout.flush()?;
                     printed_response = true;
                 }
             }
             ResponseEvent::ReasoningSummaryDelta(text) => {
-                eprintln!("(reasoning summary) {text}");
+                reasoning_summary_line.push_str(&text);
+                eprint!("\r(reasoning summary) {reasoning_summary_line}");
+                stderr.flush()?;
             }
             ResponseEvent::ReasoningContentDelta(text) => {
                 eprintln!("(reasoning detail) {text}");
             }
-            ResponseEvent::ReasoningSummaryPartAdded => {}
+            ResponseEvent::ReasoningSummaryPartAdded => {
+                if !reasoning_summary_line.is_empty() {
+                    eprintln!();
+                    reasoning_summary_line.clear();
+                }
+            }
             ResponseEvent::RateLimits(snapshot) => {
                 eprintln!("Rate limits: {snapshot:?}");
             }
             ResponseEvent::Completed { token_usage, .. } => {
+                if !reasoning_summary_line.is_empty() {
+                    eprintln!();
+                    reasoning_summary_line.clear();
+                }
                 if printed_response {
                     stdout.write_all(b"\n")?;
                     stdout.flush()?;
@@ -278,6 +286,9 @@ async fn consume_stream(stream: &mut ResponseStream) -> anyhow::Result<()> {
     if printed_response {
         stdout.write_all(b"\n")?;
         stdout.flush()?;
+    }
+    if !reasoning_summary_line.is_empty() {
+        eprintln!();
     }
     Ok(())
 }

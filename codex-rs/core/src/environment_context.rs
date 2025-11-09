@@ -94,7 +94,7 @@ impl EnvironmentContext {
             && self.writable_roots == *writable_roots
     }
 
-    pub fn diff(before: &TurnContext, after: &TurnContext) -> Self {
+    pub(crate) fn diff(before: &TurnContext, after: &TurnContext) -> Self {
         let cwd = if before.cwd != after.cwd {
             Some(after.cwd.clone())
         } else {
