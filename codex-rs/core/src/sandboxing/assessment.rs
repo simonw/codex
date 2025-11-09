@@ -134,6 +134,7 @@ pub(crate) async fn assess_command(
         config.model_reasoning_summary,
         conversation_id,
         session_source,
+        false,
     );
 
     let start = Instant::now();

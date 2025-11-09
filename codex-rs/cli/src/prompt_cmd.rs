@@ -46,6 +46,10 @@ pub struct PromptCli {
     /// Prompt to send to the model. Use `-` to read from stdin.
     #[arg(value_name = "PROMPT", value_hint = ValueHint::Other)]
     pub prompt: Option<String>,
+
+    /// Print the outgoing JSON request and incoming SSE payloads.
+    #[arg(long = "debug", default_value_t = false)]
+    pub debug: bool,
 }
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant. Respond directly to the user request without running tools or shell commands.";
@@ -80,7 +84,7 @@ pub async fn run_prompt_command(cli: PromptCli) -> anyhow::Result<()> {
     }
 
     let prompt_text = prompt_text.ok_or_else(|| anyhow::anyhow!("prompt is required"))?;
-    run_prompt(prompt_text, system_prompt, config, auth_manager).await
+    run_prompt(prompt_text, system_prompt, config, auth_manager, cli.debug).await
 }
 
 async fn load_config(cli: &PromptCli) -> anyhow::Result<Config> {
@@ -168,6 +172,7 @@ async fn run_prompt(
     system_prompt: String,
     config: Arc<Config>,
     auth_manager: Arc<AuthManager>,
+    debug_http: bool,
 ) -> anyhow::Result<()> {
     let auth_snapshot = auth_manager.auth();
     let provider = config.model_provider.clone();
@@ -200,6 +205,7 @@ async fn run_prompt(
         config.model_reasoning_summary,
         conversation_id,
         SessionSource::Cli,
+        debug_http,
     )
     .stream(&prompt)
     .await?;

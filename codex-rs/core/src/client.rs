@@ -89,6 +89,7 @@ pub struct ModelClient {
     effort: Option<ReasoningEffortConfig>,
     summary: ReasoningSummaryConfig,
     session_source: SessionSource,
+    debug_http: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -102,6 +103,7 @@ impl ModelClient {
         summary: ReasoningSummaryConfig,
         conversation_id: ConversationId,
         session_source: SessionSource,
+        debug_http: bool,
     ) -> Self {
         let client = create_client();
 
@@ -115,6 +117,7 @@ impl ModelClient {
             effort,
             summary,
             session_source,
+            debug_http,
         }
     }
 
@@ -192,6 +195,7 @@ impl ModelClient {
                 path,
                 self.provider.clone(),
                 self.otel_event_manager.clone(),
+                self.debug_http,
             )
             .await;
         }
@@ -292,13 +296,21 @@ impl ModelClient {
     ) -> std::result::Result<ResponseStream, StreamAttemptError> {
         // Always fetch the latest auth in case a prior attempt refreshed the token.
         let auth = auth_manager.as_ref().and_then(|m| m.auth());
+        let request_url = self.provider.get_full_url(&auth);
 
         trace!(
             "POST to {}: {:?}",
-            self.provider.get_full_url(&auth),
+            request_url,
             serde_json::to_string(payload_json)
                 .unwrap_or("<unable to serialize payload>".to_string())
         );
+
+        if self.debug_http {
+            let body = serde_json::to_string_pretty(payload_json)
+                .unwrap_or_else(|_| "<unable to serialize payload>".to_string());
+            eprintln!("[codex prompt debug] POST {request_url}");
+            eprintln!("[codex prompt debug] Request JSON:\n{body}");
+        }
 
         let mut req_builder = self
             .provider
@@ -338,6 +350,17 @@ impl ModelClient {
             .log_request(attempt, || req_builder.send())
             .await;
 
+        if self.debug_http {
+            match &res {
+                Ok(resp) => {
+                    eprintln!("[codex prompt debug] Response status: {}", resp.status());
+                }
+                Err(err) => {
+                    eprintln!("[codex prompt debug] Response error: {err}");
+                }
+            }
+        }
+
         let mut request_id = None;
         if let Ok(resp) = &res {
             request_id = resp
@@ -371,6 +394,7 @@ impl ModelClient {
                     tx_event,
                     self.provider.stream_idle_timeout(),
                     self.otel_event_manager.clone(),
+                    self.debug_http,
                 ));
 
                 Ok(ResponseStream { rx_event })
@@ -687,6 +711,7 @@ async fn process_sse<S>(
     tx_event: mpsc::Sender<Result<ResponseEvent>>,
     idle_timeout: Duration,
     otel_event_manager: OtelEventManager,
+    debug_http: bool,
 ) where
     S: Stream<Item = Result<Bytes>> + Unpin,
 {
@@ -763,6 +788,9 @@ async fn process_sse<S>(
 
         let raw = sse.data.clone();
         trace!("SSE event: {}", raw);
+        if debug_http {
+            eprintln!("[codex prompt debug] SSE event: {raw}");
+        }
 
         let event: SseEvent = match serde_json::from_str(&sse.data) {
             Ok(event) => event,
@@ -915,6 +943,7 @@ async fn stream_from_fixture(
     path: impl AsRef<Path>,
     provider: ModelProviderInfo,
     otel_event_manager: OtelEventManager,
+    debug_http: bool,
 ) -> Result<ResponseStream> {
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
     let f = std::fs::File::open(path.as_ref())?;
@@ -934,6 +963,7 @@ async fn stream_from_fixture(
         tx_event,
         provider.stream_idle_timeout(),
         otel_event_manager,
+        debug_http,
     ));
     Ok(ResponseStream { rx_event })
 }

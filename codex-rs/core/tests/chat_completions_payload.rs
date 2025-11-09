@@ -95,6 +95,7 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
         summary,
         conversation_id,
         codex_protocol::protocol::SessionSource::Exec,
+        false,
     );
 
     let mut prompt = Prompt::default();

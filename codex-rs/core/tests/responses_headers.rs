@@ -80,6 +80,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
         summary,
         conversation_id,
         SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Review),
+        false,
     );
 
     let mut prompt = Prompt::default();
@@ -170,6 +171,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
         SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Other(
             "my-task".to_string(),
         )),
+        false,
     );
 
     let mut prompt = Prompt::default();

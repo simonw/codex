@@ -412,6 +412,7 @@ impl Session {
             session_configuration.model_reasoning_summary,
             conversation_id,
             session_configuration.session_source.clone(),
+            false,
         );
 
         let tools_config = ToolsConfig::new(&ToolsConfigParams {
@@ -1683,6 +1684,7 @@ async fn spawn_review_thread(
         per_turn_config.model_reasoning_summary,
         sess.conversation_id,
         parent_turn_context.client.get_session_source(),
+        false,
     );
 
     let review_turn_context = TurnContext {
